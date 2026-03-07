@@ -1,15 +1,23 @@
 package server
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
+
+type Value struct {
+	Value  string
+	Expiry time.Time
+}
 
 type Server struct {
 	mu    *sync.RWMutex
-	store map[string]string
+	store map[string]Value
 }
 
 func NewServer() *Server {
 	var mu sync.RWMutex
-	store := make(map[string]string)
+	store := make(map[string]Value)
 
 	return &Server{
 		mu:    &mu,
@@ -17,20 +25,39 @@ func NewServer() *Server {
 	}
 }
 
-func (s *Server) Set(key string, value string) {
+func (s *Server) Set(key string, value string, expiry time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.store[key] = value
+	s.store[key] = Value{
+		Value:  value,
+		Expiry: expiry,
+	}
 }
 
-func (s *Server) Get(key string) (string, bool) {
+func (s *Server) Get(key string) (Value, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	storeValue, ok := s.store[key]
+
 	if !ok {
-		return "", false
+		s.mu.RUnlock()
+		return Value{}, false
+	}
+
+	// if the value has expired, delete it and return missing
+	if !storeValue.Expiry.IsZero() && time.Now().After(storeValue.Expiry) {
+		// REDIS actually doesn't delete keys - to avoid extra writes while reading values. The deleted values are then cleaned up later.
+		// But we will...
+		// we first unlock the RLock
+		s.mu.RUnlock()
+		// since we're now mutating the map, we need a write lock
+		s.mu.Lock()
+		delete(s.store, key)
+		s.mu.Unlock()
+		return Value{}, false
+	} else {
+		s.mu.RUnlock()
 	}
 
 	return storeValue, true
