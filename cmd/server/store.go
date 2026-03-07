@@ -1,13 +1,31 @@
 package server
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
 
+type ValueType int
+
+const (
+	TypeString ValueType = iota
+	TypeList
+)
+
 type Value struct {
-	Value  string
-	Expiry time.Time
+	Type        ValueType
+	StringValue string
+	ListValue   []string
+	Expiry      time.Time
+}
+
+func NewStringValue(val string, expiry time.Time) Value {
+	return Value{Type: TypeString, StringValue: val, Expiry: expiry}
+}
+
+func NewListEntry(values []string) Value {
+	return Value{Type: TypeList, ListValue: values}
 }
 
 type Server struct {
@@ -29,10 +47,31 @@ func (s *Server) Set(key string, value string, expiry time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.store[key] = Value{
-		Value:  value,
-		Expiry: expiry,
+	valToStore := NewStringValue(value, expiry)
+	s.store[key] = valToStore
+}
+
+func (s *Server) RPush(key string, vals ...string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	storedVal, ok := s.store[key]
+	if !ok {
+		// we need to create a new list
+		s.store[key] = NewListEntry(vals)
+		return len(vals), nil
 	}
+
+	// the key already exists, we need to check if this is actually a list
+
+	if storedVal.Type != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE key is not a list")
+	}
+
+	storedVal.ListValue = append(storedVal.ListValue, vals...)
+	s.store[key] = storedVal
+
+	return len(storedVal.ListValue), nil
 }
 
 func (s *Server) Get(key string) (Value, bool) {
