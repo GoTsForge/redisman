@@ -51,7 +51,7 @@ func (s *Server) Set(key string, value string, expiry time.Time) {
 	s.store[key] = valToStore
 }
 
-func (s *Server) RPush(key string, vals ...string) (int, error) {
+func (s *Server) LPush(key string, vals []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -63,7 +63,78 @@ func (s *Server) RPush(key string, vals ...string) (int, error) {
 	}
 
 	// the key already exists, we need to check if this is actually a list
+	if storedVal.Type != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE key is not a list")
+	}
 
+	storedVal.ListValue = append(vals, storedVal.ListValue...)
+	s.store[key] = storedVal
+
+	return len(storedVal.ListValue), nil
+}
+
+func (s *Server) LRange(key string, start int, stop int) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	storedVal, exists := s.store[key]
+	if !exists {
+		return []string{}, nil
+	}
+
+	if storedVal.Type != TypeList {
+		return []string{}, fmt.Errorf("WRONGTYPE key is not of list type")
+	}
+
+	length := len(storedVal.ListValue)
+
+	if start < 0 {
+		start = length + start
+	}
+
+	if stop < 0 {
+		stop = length + stop
+	}
+
+	// start could still be less than 0 if the user input a very large negative number, we don't care in that case
+	if start < 0 {
+		start = 0
+	}
+
+	if start > stop {
+		return []string{}, nil
+	}
+
+	if start >= length {
+		return []string{}, nil
+	}
+
+	if stop >= length {
+		stop = length - 1
+	}
+
+	resultLength := stop - start + 1
+	result := make([]string, resultLength)
+
+	// why copy - to prevent external memory mutation, should be optional but better be safe.
+	// otherwise slicing does not return a new slice, it creates a header pointing to the same slice underneath.
+	copy(result, storedVal.ListValue[start:stop+1])
+
+	return result, nil
+}
+
+func (s *Server) RPush(key string, vals []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	storedVal, ok := s.store[key]
+	if !ok {
+		// we need to create a new list
+		s.store[key] = NewListEntry(vals)
+		return len(vals), nil
+	}
+
+	// the key already exists, we need to check if this is actually a list
 	if storedVal.Type != TypeList {
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
 	}

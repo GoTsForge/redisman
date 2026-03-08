@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +71,6 @@ func HandleSet(s *server.Server, cmd parser.Command) protocol.Response {
 			expiry := time.Now().Add(time.Second * time.Duration(expiryValInt))
 			s.Set(key, val, expiry)
 		}
-
 	}
 
 	resp, err := protocol.NewSimpleString("OK")
@@ -81,11 +81,63 @@ func HandleSet(s *server.Server, cmd parser.Command) protocol.Response {
 	return resp
 }
 
-func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
-	key := cmd.Args[0]
-	val := cmd.Args[1]
+func HandleLPush(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 2 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_LPUSH)
+	}
 
-	listLength, err := s.RPush(key, val)
+	key := cmd.Args[0]
+	vals := cmd.Args[1:]
+
+	// reverse the slice first since this is LPUSH
+	slices.Reverse(vals)
+
+	listLength, err := s.LPush(key, vals)
+
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewInteger(listLength)
+}
+
+func HandleLRange(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 3 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)
+	}
+
+	key := cmd.Args[0]
+	startIndex := cmd.Args[1]
+	stopIndex := cmd.Args[2]
+
+	startIndexInt, err := strconv.Atoi(startIndex)
+	if err != nil {
+		return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+	}
+
+	stopIndexInt, err := strconv.Atoi(stopIndex)
+	if err != nil {
+		return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+	}
+
+	// call the LRange method on the store
+	arr, err := s.LRange(key, startIndexInt, stopIndexInt)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewBulkArray(arr)
+}
+
+func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 2 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)
+	}
+
+	key := cmd.Args[0]
+	vals := cmd.Args[1:]
+
+	listLength, err := s.RPush(key, vals)
 
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
