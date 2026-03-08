@@ -207,7 +207,16 @@ func (s *Server) ListPop(key string) (string, bool, error) {
 	}
 
 	poppedVal := val.ListValue[0]
-	val.ListValue = val.ListValue[1:]
+
+	newListValue := make([]string, len(val.ListValue)-1)
+	copy(newListValue, val.ListValue[1:])
+
+	s.store[key] = Value{
+		Type:        val.Type,
+		Expiry:      val.Expiry,
+		StringValue: val.StringValue,
+		ListValue:   newListValue,
+	}
 
 	return poppedVal, true, nil
 }
