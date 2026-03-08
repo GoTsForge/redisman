@@ -188,3 +188,26 @@ func (s *Server) ListLen(key string) (int, error) {
 
 	return len(val.ListValue), nil
 }
+
+func (s *Server) ListPop(key string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	val, exists := s.store[key]
+	if !exists {
+		return "", false, nil
+	}
+
+	if val.Type != TypeList {
+		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	if len(val.ListValue) == 0 {
+		return "", false, nil
+	}
+
+	poppedVal := val.ListValue[0]
+	val.ListValue = val.ListValue[1:]
+
+	return poppedVal, true, nil
+}

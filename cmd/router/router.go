@@ -21,6 +21,7 @@ func NewRouter() Router {
 			"RPUSH":  handler.HandleRPush,
 			"LRANGE": handler.HandleLRange,
 			"LLEN":   handler.HandleLLen,
+			"LPOP":   handler.HandleLPop,
 		},
 	}
 }

@@ -143,6 +143,21 @@ func HandleLLen(s *server.Server, cmd parser.Command) protocol.Response {
 	return protocol.NewInteger(listLength)
 }
 
+func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
+	key := cmd.Args[0]
+
+	poppedVal, found, err := s.ListPop(key)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	if !found {
+		return protocol.NewNullBulkString()
+	}
+
+	return protocol.NewBulkString(poppedVal)
+}
+
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
 	if len(cmd.Args) < 2 {
 		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)
