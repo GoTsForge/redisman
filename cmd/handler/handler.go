@@ -129,6 +129,20 @@ func HandleLRange(s *server.Server, cmd parser.Command) protocol.Response {
 	return protocol.NewBulkArray(arr)
 }
 
+func HandleLLen(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) != 1 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_LLEN)
+	}
+
+	key := cmd.Args[0]
+	listLength, err := s.ListLen(key)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewInteger(listLength)
+}
+
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
 	if len(cmd.Args) < 2 {
 		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)

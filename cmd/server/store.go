@@ -172,3 +172,19 @@ func (s *Server) Get(key string) (Value, bool) {
 
 	return storeValue, true
 }
+
+func (s *Server) ListLen(key string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	val, exists := s.store[key]
+	if !exists {
+		return 0, nil
+	}
+
+	if val.Type != TypeList {
+		return 0, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	return len(val.ListValue), nil
+}
