@@ -61,3 +61,18 @@ func (n NullBulkString) Encode() []byte {
 func NewNullBulkString() Response {
 	return NullBulkString{}
 }
+
+type Integer struct {
+	value int
+}
+
+func (i Integer) Encode() []byte {
+	formattedInt := fmt.Sprintf(":%d\r\n", i.value)
+	return []byte(formattedInt)
+}
+
+func NewInteger(i int) Response {
+	return Integer{
+		value: i,
+	}
+}

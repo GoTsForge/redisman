@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -83,17 +82,16 @@ func HandleSet(s *server.Server, cmd parser.Command) protocol.Response {
 }
 
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
-	fmt.Println(cmd)
 	key := cmd.Args[0]
 	val := cmd.Args[1]
 
-	fmt.Println(key, val)
+	listLength, err := s.RPush(key, val)
 
-	res, err := s.RPush(key, val)
-	fmt.Println(res)
-	fmt.Println(err)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
 
-	return protocol.NewNullBulkString()
+	return protocol.NewInteger(listLength)
 }
 
 func HandleGet(s *server.Server, cmd parser.Command) protocol.Response {
@@ -106,6 +104,10 @@ func HandleGet(s *server.Server, cmd parser.Command) protocol.Response {
 	value, exists := s.Get(key)
 	if !exists {
 		return protocol.NewNullBulkString()
+	}
+
+	if value.Type != server.TypeString {
+		return protocol.NewErrorResponse("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	return protocol.NewBulkString(value.StringValue)
