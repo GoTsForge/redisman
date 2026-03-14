@@ -144,9 +144,23 @@ func HandleLLen(s *server.Server, cmd parser.Command) protocol.Response {
 }
 
 func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
-	key := cmd.Args[0]
+	if len(cmd.Args) < 1 || len(cmd.Args) > 2 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_LPOP)
+	}
 
-	poppedVal, found, err := s.ListPop(key)
+	key := cmd.Args[0]
+	numberOfArgsToRemove := cmd.Args[1]
+	numberOfArgsToRemoveInt := 1
+
+	if len(numberOfArgsToRemove) != 0 {
+		var err error
+		numberOfArgsToRemoveInt, err = strconv.Atoi(numberOfArgsToRemove)
+		if err != nil {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+	}
+
+	poppedVal, found, err := s.ListPop(key, numberOfArgsToRemoveInt)
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
 	}
@@ -155,7 +169,11 @@ func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewNullBulkString()
 	}
 
-	return protocol.NewBulkString(poppedVal)
+	if len(poppedVal) == 1 {
+		return protocol.NewBulkString(poppedVal[0])
+	}
+
+	return protocol.NewBulkArray(poppedVal)
 }
 
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {

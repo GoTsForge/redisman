@@ -189,25 +189,38 @@ func (s *Server) ListLen(key string) (int, error) {
 	return len(val.ListValue), nil
 }
 
-func (s *Server) ListPop(key string) (string, bool, error) {
+func (s *Server) ListPop(key string, numValuesToRemove int) ([]string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	val, exists := s.store[key]
 	if !exists {
-		return "", false, nil
+		return []string{}, false, nil
 	}
 
 	if val.Type != TypeList {
-		return "", false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		return []string{}, false, fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
 	}
 
 	if len(val.ListValue) == 0 {
-		return "", false, nil
+		return []string{}, false, nil
 	}
 
-	poppedVal := val.ListValue[0]
-	val.ListValue = val.ListValue[1:]
+	if numValuesToRemove > len(val.ListValue) {
+		numValuesToRemove = len(val.ListValue)
+	}
 
-	return poppedVal, true, nil
+	poppedValues := make([]string, numValuesToRemove)
+	copy(poppedValues, val.ListValue[:numValuesToRemove])
+
+	// We do this because we want to make the underlying array elements "zero" so that GC can pick them up immediately
+	for i := 0; i < numValuesToRemove; i++ {
+		val.ListValue[i] = ""
+	}
+
+	val.ListValue = val.ListValue[numValuesToRemove:]
+
+	s.store[key] = val
+
+	return poppedValues, true, nil
 }
