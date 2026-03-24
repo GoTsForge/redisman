@@ -14,9 +14,15 @@ type Router struct {
 func NewRouter() Router {
 	return Router{
 		handlers: map[string]handler.Handler{
-			"PING": handler.HandlePing,
-			"SET":  handler.HandleSet,
-			"GET":  handler.HandleGet,
+			"PING":   handler.HandlePing,
+			"SET":    handler.HandleSet,
+			"GET":    handler.HandleGet,
+			"LPUSH":  handler.HandleLPush,
+			"RPUSH":  handler.HandleRPush,
+			"LRANGE": handler.HandleLRange,
+			"LLEN":   handler.HandleLLen,
+			"LPOP":   handler.HandleLPop,
+			"BLPOP":  handler.HandleBLPop,
 		},
 	}
 }

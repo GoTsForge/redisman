@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +71,6 @@ func HandleSet(s *server.Server, cmd parser.Command) protocol.Response {
 			expiry := time.Now().Add(time.Second * time.Duration(expiryValInt))
 			s.Set(key, val, expiry)
 		}
-
 	}
 
 	resp, err := protocol.NewSimpleString("OK")
@@ -79,6 +79,154 @@ func HandleSet(s *server.Server, cmd parser.Command) protocol.Response {
 	}
 
 	return resp
+}
+
+func HandleLPush(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 2 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_LPUSH)
+	}
+
+	key := cmd.Args[0]
+	vals := cmd.Args[1:]
+
+	// reverse the slice first since this is LPUSH
+	slices.Reverse(vals)
+
+	listLength, err := s.LPush(key, vals)
+
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewInteger(listLength)
+}
+
+func HandleLRange(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 3 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)
+	}
+
+	key := cmd.Args[0]
+	startIndex := cmd.Args[1]
+	stopIndex := cmd.Args[2]
+
+	startIndexInt, err := strconv.Atoi(startIndex)
+	if err != nil {
+		return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+	}
+
+	stopIndexInt, err := strconv.Atoi(stopIndex)
+	if err != nil {
+		return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+	}
+
+	// call the LRange method on the store
+	arr, err := s.LRange(key, startIndexInt, stopIndexInt)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewBulkArray(arr)
+}
+
+func HandleLLen(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) != 1 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_LLEN)
+	}
+
+	key := cmd.Args[0]
+	listLength, err := s.ListLen(key)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewInteger(listLength)
+}
+
+func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 1 || len(cmd.Args) > 2 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_LPOP)
+	}
+
+	key := cmd.Args[0]
+	numberOfArgsToRemove := cmd.Args[1]
+	numberOfArgsToRemoveInt := 1
+
+	if len(numberOfArgsToRemove) != 0 {
+		var err error
+		numberOfArgsToRemoveInt, err = strconv.Atoi(numberOfArgsToRemove)
+		if err != nil {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+	}
+
+	poppedVal, found, err := s.ListPop(key, numberOfArgsToRemoveInt)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	if !found {
+		return protocol.NewNullBulkString()
+	}
+
+	if len(poppedVal) == 1 {
+		return protocol.NewBulkString(poppedVal[0])
+	}
+
+	return protocol.NewBulkArray(poppedVal)
+}
+
+func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 1 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_BLPOP)
+	}
+
+	argsLength := len(cmd.Args)
+
+	keys := cmd.Args[:argsLength-1]
+
+	timeout := cmd.Args[argsLength-1]
+	timeoutInt := 0
+
+	if len(timeout) != 0 {
+		var err error
+		timeoutInt, err = strconv.Atoi(timeout)
+		if err != nil {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+	}
+
+	poppedVal, found, err := s.BListPop(keys, time.Duration(timeoutInt)*time.Second)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	if !found {
+		return protocol.NewNullBulkString()
+	}
+
+	if len(poppedVal) == 1 {
+		return protocol.NewBulkString(poppedVal[0])
+	}
+
+	return protocol.NewBulkArray(poppedVal)
+}
+
+func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 2 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)
+	}
+
+	key := cmd.Args[0]
+	vals := cmd.Args[1:]
+
+	listLength, err := s.RPush(key, vals)
+
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewInteger(listLength)
 }
 
 func HandleGet(s *server.Server, cmd parser.Command) protocol.Response {
@@ -93,5 +241,9 @@ func HandleGet(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewNullBulkString()
 	}
 
-	return protocol.NewBulkString(value.Value)
+	if value.Type != server.TypeString {
+		return protocol.NewErrorResponse("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	return protocol.NewBulkString(value.StringValue)
 }

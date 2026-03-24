@@ -51,7 +51,6 @@ func NewErrorResponse(m string) Response {
 	return ErrorResponse{message: m}
 }
 
-// No fields??
 type NullBulkString struct{}
 
 func (n NullBulkString) Encode() []byte {
@@ -60,4 +59,41 @@ func (n NullBulkString) Encode() []byte {
 
 func NewNullBulkString() Response {
 	return NullBulkString{}
+}
+
+type Integer struct {
+	value int
+}
+
+func (i Integer) Encode() []byte {
+	formattedInt := fmt.Sprintf(":%d\r\n", i.value)
+	return []byte(formattedInt)
+}
+
+func NewInteger(i int) Response {
+	return Integer{
+		value: i,
+	}
+}
+
+type BulkArray struct {
+	values []string
+}
+
+func (a BulkArray) Encode() []byte {
+	arrLen := len(a.values)
+
+	bulkString := fmt.Sprintf("*%d\r\n", arrLen)
+	for _, val := range a.values {
+		formattedVal := fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
+		bulkString += formattedVal
+	}
+
+	return []byte(bulkString)
+}
+
+func NewBulkArray(values []string) Response {
+	return BulkArray{
+		values: values,
+	}
 }
