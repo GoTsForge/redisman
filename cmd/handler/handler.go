@@ -176,6 +176,42 @@ func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
 	return protocol.NewBulkArray(poppedVal)
 }
 
+func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) < 1 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_BLPOP)
+	}
+
+	argsLength := len(cmd.Args)
+
+	keys := cmd.Args[:argsLength-1]
+
+	timeout := cmd.Args[argsLength-1]
+	timeoutInt := 0
+
+	if len(timeout) != 0 {
+		var err error
+		timeoutInt, err = strconv.Atoi(timeout)
+		if err != nil {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+	}
+
+	poppedVal, found, err := s.BListPop(keys, time.Duration(timeoutInt)*time.Second)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	if !found {
+		return protocol.NewNullBulkString()
+	}
+
+	if len(poppedVal) == 1 {
+		return protocol.NewBulkString(poppedVal[0])
+	}
+
+	return protocol.NewBulkArray(poppedVal)
+}
+
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
 	if len(cmd.Args) < 2 {
 		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_RPUSH)

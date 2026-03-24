@@ -22,6 +22,7 @@ func NewRouter() Router {
 			"LRANGE": handler.HandleLRange,
 			"LLEN":   handler.HandleLLen,
 			"LPOP":   handler.HandleLPop,
+			"BLPOP":  handler.HandleBLPop,
 		},
 	}
 }

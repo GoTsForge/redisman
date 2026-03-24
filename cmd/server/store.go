@@ -31,15 +31,20 @@ func NewListEntry(values []string) Value {
 type Server struct {
 	mu    *sync.RWMutex
 	store map[string]Value
+	// waiters is a map of key -> channels used for blocking operations
+	// multiple BLPOP meaning multiple goroutines can wait on the same key - hence we need a slice of channels
+	waiters map[string][]chan struct{}
 }
 
 func NewServer() *Server {
 	var mu sync.RWMutex
 	store := make(map[string]Value)
+	waiters := make(map[string][]chan struct{})
 
 	return &Server{
-		mu:    &mu,
-		store: store,
+		mu:      &mu,
+		store:   store,
+		waiters: waiters,
 	}
 }
 
@@ -51,14 +56,26 @@ func (s *Server) Set(key string, value string, expiry time.Time) {
 	s.store[key] = valToStore
 }
 
+func (s *Server) signalFirstWaiter(key string) {
+	firstWaiterForKey := s.waiters[key][0]
+	s.waiters[key] = s.waiters[key][1:]
+
+	// signal the channel that a value is pushed
+	firstWaiterForKey <- struct{}{}
+}
+
 func (s *Server) LPush(key string, vals []string) (int, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	storedVal, ok := s.store[key]
 	if !ok {
 		// we need to create a new list
 		s.store[key] = NewListEntry(vals)
+		if len(s.waiters[key]) > 0 {
+			s.signalFirstWaiter(key)
+		}
+
+		s.mu.Unlock()
 		return len(vals), nil
 	}
 
@@ -67,9 +84,14 @@ func (s *Server) LPush(key string, vals []string) (int, error) {
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
 	}
 
+	if len(s.waiters[key]) > 0 {
+		s.signalFirstWaiter(key)
+	}
+
 	storedVal.ListValue = append(vals, storedVal.ListValue...)
 	s.store[key] = storedVal
 
+	s.mu.Unlock()
 	return len(storedVal.ListValue), nil
 }
 
@@ -125,18 +147,26 @@ func (s *Server) LRange(key string, start int, stop int) ([]string, error) {
 
 func (s *Server) RPush(key string, vals []string) (int, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	storedVal, ok := s.store[key]
 	if !ok {
 		// we need to create a new list
 		s.store[key] = NewListEntry(vals)
+		if len(s.waiters[key]) > 0 {
+			s.signalFirstWaiter(key)
+		}
+
+		s.mu.Unlock()
 		return len(vals), nil
 	}
 
 	// the key already exists, we need to check if this is actually a list
 	if storedVal.Type != TypeList {
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
+	}
+
+	if len(s.waiters[key]) > 0 {
+		s.signalFirstWaiter(key)
 	}
 
 	storedVal.ListValue = append(storedVal.ListValue, vals...)
@@ -223,4 +253,66 @@ func (s *Server) ListPop(key string, numValuesToRemove int) ([]string, bool, err
 	s.store[key] = val
 
 	return poppedValues, true, nil
+}
+
+func (s *Server) cleanup(keys []string, notifyChan chan struct{}) {
+	for _, key := range keys {
+		for idx, waiter := range s.waiters[key] {
+			if waiter == notifyChan {
+				s.waiters[key] = append(s.waiters[key][:idx], s.waiters[key][idx+1:]...)
+
+				if len(s.waiters[key]) == 0 {
+					delete(s.waiters, key)
+				}
+
+				break
+			}
+		}
+	}
+}
+
+func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool, error) {
+	var deadline <-chan time.Time
+	if timeout > time.Duration(0) {
+		deadline = time.After(timeout)
+	}
+
+	notifyChan := make(chan struct{}, 1)
+
+	for {
+		s.mu.Lock()
+		s.cleanup(keys, notifyChan)
+
+		for _, key := range keys {
+			val := s.store[key]
+			if val.Type == TypeList && len(val.ListValue) > 0 {
+				poppedVal := val.ListValue[0]
+				val.ListValue = val.ListValue[1:]
+				s.store[key] = val
+
+				s.mu.Unlock()
+				return []string{key, poppedVal}, true, nil
+			}
+		}
+
+		for _, key := range keys {
+			// register the waiters for this key
+			s.waiters[key] = append(s.waiters[key], notifyChan)
+		}
+
+		s.mu.Unlock()
+
+		select {
+		case <-notifyChan:
+			// a signal for any key
+			continue
+		case <-deadline:
+			s.mu.Lock()
+			// clean up notifyChan from ALL waiters for ALL keys
+			s.cleanup(keys, notifyChan)
+			s.mu.Unlock()
+		}
+
+		return []string{}, false, nil
+	}
 }
