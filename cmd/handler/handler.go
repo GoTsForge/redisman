@@ -247,3 +247,62 @@ func HandleGet(s *server.Server, cmd parser.Command) protocol.Response {
 
 	return protocol.NewBulkString(value.StringValue)
 }
+
+func HandleType(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) != 1 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_TYPE)
+	}
+
+	key := cmd.Args[0]
+
+	_, exists := s.Get(key)
+	if !exists {
+		res, err := protocol.NewSimpleString("none")
+		if err != nil {
+			return protocol.NewErrorResponse(err.Error())
+
+		}
+
+		return res
+	}
+
+	res, err := protocol.NewSimpleString("string")
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+
+	}
+
+	return res
+}
+
+func HandleXAdd(s *server.Server, cmd parser.Command) protocol.Response {
+	// Stream key, entry id, atleast one K-V pair
+	if len(cmd.Args) < 4 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XADD)
+	}
+
+	argsLen := len(cmd.Args)
+
+	if argsLen%2 != 0 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XADD)
+	}
+
+	key := cmd.Args[0]
+	entryId := cmd.Args[1]
+
+	restArgs := cmd.Args[2:] // [k,v,k1,v1...] -> {k:v,k1:v1...}
+	var kvPairs map[string]string = make(map[string]string)
+
+	for idx := 0; idx < len(restArgs); idx += 2 {
+		currVal := restArgs[idx]
+		nextVal := restArgs[idx+1]
+		kvPairs[currVal] = nextVal
+	}
+
+	res, err := s.XAdd(key, entryId, kvPairs)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewBulkString(res)
+}

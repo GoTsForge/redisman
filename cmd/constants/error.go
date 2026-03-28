@@ -8,4 +8,6 @@ var ERR_WRONG_NUMBER_OF_ARGS_RPUSH = "ERR wrong number of arguments for 'rpush' 
 var ERR_WRONG_NUMBER_OF_ARGS_LLEN = "ERR wrong number of arguments for 'llen' command"
 var ERR_WRONG_NUMBER_OF_ARGS_LPOP = "ERR wrong number of arguments for 'lpop' command"
 var ERR_WRONG_NUMBER_OF_ARGS_BLPOP = "ERR wrong number of arguments for 'blpop' command"
+var ERR_WRONG_NUMBER_OF_ARGS_TYPE = "ERR wrong number of arguments for 'type' command"
+var ERR_WRONG_NUMBER_OF_ARGS_XADD = "ERR wrong number of arguments for 'xadd' command"
 var ERR_SYNTAX_ERROR = "ERR syntax error"

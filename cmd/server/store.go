@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 )
@@ -11,12 +12,19 @@ type ValueType int
 const (
 	TypeString ValueType = iota
 	TypeList
+	TypeStream
 )
+
+type Entry struct {
+	ID   string
+	Data map[string]string
+}
 
 type Value struct {
 	Type        ValueType
 	StringValue string
 	ListValue   []string
+	Entries     []Entry
 	Expiry      time.Time
 }
 
@@ -26,6 +34,13 @@ func NewStringValue(val string, expiry time.Time) Value {
 
 func NewListEntry(values []string) Value {
 	return Value{Type: TypeList, ListValue: values}
+}
+
+func NewStream(entries []Entry) Value {
+	return Value{
+		Type:    TypeStream,
+		Entries: entries,
+	}
 }
 
 type Server struct {
@@ -81,6 +96,7 @@ func (s *Server) LPush(key string, vals []string) (int, error) {
 
 	// the key already exists, we need to check if this is actually a list
 	if storedVal.Type != TypeList {
+		s.mu.Unlock()
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
 	}
 
@@ -162,6 +178,7 @@ func (s *Server) RPush(key string, vals []string) (int, error) {
 
 	// the key already exists, we need to check if this is actually a list
 	if storedVal.Type != TypeList {
+		s.mu.Unlock()
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
 	}
 
@@ -172,6 +189,7 @@ func (s *Server) RPush(key string, vals []string) (int, error) {
 	storedVal.ListValue = append(storedVal.ListValue, vals...)
 	s.store[key] = storedVal
 
+	s.mu.Unlock()
 	return len(storedVal.ListValue), nil
 }
 
@@ -315,4 +333,51 @@ func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool,
 
 		return []string{}, false, nil
 	}
+}
+
+func (s *Server) XAdd(key string, entryId string, kvPairs map[string]string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	streamVal, exists := s.store[key]
+	if !exists {
+		// stream doesn't exist, we create it
+		newEntry := Entry{
+			ID:   entryId,
+			Data: kvPairs,
+		}
+
+		s.store[key] = NewStream([]Entry{newEntry})
+		return entryId, nil
+	}
+
+	if streamVal.Type != TypeStream {
+		return "", fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+	}
+
+	// for this stream, search the entry with the entryId and map over the kvPairs and add to the existing kvPairs for the entry
+	currentEntries := streamVal.Entries
+	foundEntryId := false
+
+	for _, currentEntry := range currentEntries {
+		if currentEntry.ID == entryId {
+			maps.Copy(currentEntry.Data, kvPairs)
+			foundEntryId = true
+			break
+		}
+	}
+
+	if !foundEntryId {
+		// entry does not already exist in the stream, add it to the stream
+		newEntry := Entry{
+			ID:   entryId,
+			Data: kvPairs,
+		}
+
+		streamVal.Entries = append(streamVal.Entries, newEntry)
+		s.store[key] = streamVal
+		return entryId, nil
+	}
+
+	return entryId, nil
 }
