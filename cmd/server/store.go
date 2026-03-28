@@ -5,6 +5,8 @@ import (
 	"maps"
 	"sync"
 	"time"
+
+	"github.com/gotsforge/redisman/cmd/utils"
 )
 
 type ValueType int
@@ -333,6 +335,43 @@ func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool,
 
 		return []string{}, false, nil
 	}
+}
+
+func (s *Server) validateStreamEntryId(key string, entryId string) bool {
+	timestamp, sequenceNumber, isValid := utils.ExtractDetailsFromEntryId(entryId)
+	if !isValid {
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	streamVal, exists := s.store[key]
+
+	if !exists {
+		return true
+	}
+
+	// for an empty stream, the entry id must be greater than 0-0. The minimum Id supported is 0-1
+	if len(streamVal.Entries) == 0 {
+		return timestamp > 0 && sequenceNumber > 1
+	}
+
+	lastEntry := streamVal.Entries[len(streamVal.Entries)-1]
+	lastTimestamp, lastSequenceNumber, isValid := utils.ExtractDetailsFromEntryId(lastEntry.ID)
+	if !isValid {
+		panic(fmt.Errorf("invalid entryId %s in stream %s", lastEntry.ID, key))
+	}
+
+	if timestamp < lastTimestamp {
+		return false
+	}
+
+	if timestamp == lastTimestamp {
+		return sequenceNumber > lastSequenceNumber
+	}
+
+	return true
 }
 
 func (s *Server) XAdd(key string, entryId string, kvPairs map[string]string) (string, error) {
