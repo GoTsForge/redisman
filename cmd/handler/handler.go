@@ -10,6 +10,7 @@ import (
 	"github.com/gotsforge/redisman/cmd/parser"
 	"github.com/gotsforge/redisman/cmd/protocol"
 	"github.com/gotsforge/redisman/cmd/server"
+	"github.com/gotsforge/redisman/cmd/utils"
 )
 
 type Handler func(*server.Server, parser.Command) protocol.Response
@@ -126,7 +127,12 @@ func HandleLRange(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewErrorResponse(err.Error())
 	}
 
-	return protocol.NewBulkArray(arr)
+	var elements []protocol.Response
+	for _, elem := range arr {
+		elements = append(elements, protocol.NewBulkString(elem))
+	}
+
+	return protocol.NewArray(elements)
 }
 
 func HandleLLen(s *server.Server, cmd parser.Command) protocol.Response {
@@ -160,7 +166,7 @@ func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		}
 	}
 
-	poppedVal, found, err := s.ListPop(key, numberOfArgsToRemoveInt)
+	poppedVals, found, err := s.ListPop(key, numberOfArgsToRemoveInt)
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
 	}
@@ -169,11 +175,12 @@ func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewNullBulkString()
 	}
 
-	if len(poppedVal) == 1 {
-		return protocol.NewBulkString(poppedVal[0])
+	var elements []protocol.Response
+	for _, poppedVal := range poppedVals {
+		elements = append(elements, protocol.NewBulkString(poppedVal))
 	}
 
-	return protocol.NewBulkArray(poppedVal)
+	return protocol.NewArray(elements)
 }
 
 func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
@@ -196,7 +203,7 @@ func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		}
 	}
 
-	poppedVal, found, err := s.BListPop(keys, time.Duration(timeoutInt)*time.Second)
+	poppedVals, found, err := s.BListPop(keys, time.Duration(timeoutInt)*time.Second)
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
 	}
@@ -205,11 +212,12 @@ func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewNullBulkString()
 	}
 
-	if len(poppedVal) == 1 {
-		return protocol.NewBulkString(poppedVal[0])
+	var elements []protocol.Response
+	for _, poppedVal := range poppedVals {
+		elements = append(elements, protocol.NewBulkString(poppedVal))
 	}
 
-	return protocol.NewBulkArray(poppedVal)
+	return protocol.NewArray(elements)
 }
 
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
@@ -299,10 +307,17 @@ func HandleXAdd(s *server.Server, cmd parser.Command) protocol.Response {
 		kvPairs[currVal] = nextVal
 	}
 
-	res, err := s.XAdd(key, entryId, kvPairs)
+	// should parse entryId (string here) and return the timestamp and sequenceNumber
+	parsedEntryId := utils.ExtractDetailsFromEntryId(entryId)
+
+	if !parsedEntryId.IsValid {
+		return protocol.NewErrorResponse(constants.ERR_INVALID_ID_XADD)
+	}
+
+	res, err := s.XAdd(key, parsedEntryId, kvPairs)
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
 	}
 
-	return protocol.NewBulkString(res)
+	return protocol.NewBulkString(res.String())
 }

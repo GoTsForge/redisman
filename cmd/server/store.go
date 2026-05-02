@@ -2,10 +2,10 @@ package server
 
 import (
 	"fmt"
-	"maps"
 	"sync"
 	"time"
 
+	"github.com/gotsforge/redisman/cmd/constants"
 	"github.com/gotsforge/redisman/cmd/utils"
 )
 
@@ -17,8 +17,18 @@ const (
 	TypeStream
 )
 
+type EntryId struct {
+	Timestamp      int
+	SequenceNumber int
+}
+
+// Format the entryId in format: `ts-seq`
+func (e EntryId) String() string {
+	return fmt.Sprintf("%d-%d", e.Timestamp, e.SequenceNumber)
+}
+
 type Entry struct {
-	ID   string
+	ID   EntryId
 	Data map[string]string
 }
 
@@ -292,6 +302,7 @@ func (s *Server) cleanup(keys []string, notifyChan chan struct{}) {
 }
 
 func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool, error) {
+
 	var deadline <-chan time.Time
 	if timeout > time.Duration(0) {
 		deadline = time.After(timeout)
@@ -337,86 +348,130 @@ func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool,
 	}
 }
 
-func (s *Server) validateStreamEntryId(key string, entryId string) bool {
-	timestamp, sequenceNumber, isValid := utils.ExtractDetailsFromEntryId(entryId)
-	if !isValid {
-		return false
+// returns timestamp and the sequenceNumber
+func resolveEntryId(parsedEntryId utils.ParsedEntryId, lastEntry *Entry) (int, int) {
+	var resolvedTimestamp int = parsedEntryId.Timestamp
+	var resolvedSequenceNumber int = parsedEntryId.SequenceNumber
+
+	if lastEntry == nil {
+		// no history of an entry
+		if parsedEntryId.IsTimestampAutoGen {
+			resolvedTimestamp = int(time.Now().UnixMilli())
+		}
+
+		if parsedEntryId.IsSequenceNumberAutoGen {
+			if resolvedTimestamp == 0 {
+				resolvedSequenceNumber = 1
+			} else {
+				resolvedSequenceNumber = 0
+			}
+		}
+
+		return resolvedTimestamp, resolvedSequenceNumber
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	streamVal, exists := s.store[key]
-
-	if !exists {
-		return true
+	if parsedEntryId.IsTimestampAutoGen {
+		// get the max of the last entry timestamp and the current timestamp that the clock shows to prevent clock skew
+		resolvedTimestamp = max(int(time.Now().UnixMilli()), lastEntry.ID.Timestamp)
 	}
 
-	// for an empty stream, the entry id must be greater than 0-0. The minimum Id supported is 0-1
-	if len(streamVal.Entries) == 0 {
-		return timestamp > 0 && sequenceNumber > 1
+	if parsedEntryId.IsSequenceNumberAutoGen {
+		if resolvedTimestamp == lastEntry.ID.Timestamp {
+			resolvedSequenceNumber = lastEntry.ID.SequenceNumber + 1
+		} else {
+			if resolvedTimestamp == 0 {
+				resolvedSequenceNumber = 1
+			} else {
+				resolvedSequenceNumber = 0
+			}
+		}
 	}
 
-	lastEntry := streamVal.Entries[len(streamVal.Entries)-1]
-	lastTimestamp, lastSequenceNumber, isValid := utils.ExtractDetailsFromEntryId(lastEntry.ID)
-	if !isValid {
-		panic(fmt.Errorf("invalid entryId %s in stream %s", lastEntry.ID, key))
-	}
-
-	if timestamp < lastTimestamp {
-		return false
-	}
-
-	if timestamp == lastTimestamp {
-		return sequenceNumber > lastSequenceNumber
-	}
-
-	return true
+	return resolvedTimestamp, resolvedSequenceNumber
 }
 
-func (s *Server) XAdd(key string, entryId string, kvPairs map[string]string) (string, error) {
+func (s *Server) lookUpLastEntry(key string) (*Entry, error) {
+	streamValue, exists := s.store[key]
+
+	if !exists {
+		return nil, nil
+	}
+
+	if streamValue.Type != TypeStream {
+		return nil, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
+	}
+
+	if len(streamValue.Entries) == 0 {
+		return nil, nil
+	}
+
+	return &streamValue.Entries[len(streamValue.Entries)-1], nil
+}
+
+func validateResolvedEntryId(timestamp int, sequenceNumber int, lastEntry *Entry) error {
+	if timestamp == 0 && sequenceNumber == 0 {
+		return fmt.Errorf(constants.ERR_INVALID_ID_MUST_BE_GREATER_XADD)
+	}
+
+	if lastEntry != nil {
+
+		if timestamp < lastEntry.ID.Timestamp {
+			return fmt.Errorf(constants.ERR_INVALID_ID_XADD_SMALLER)
+		}
+
+		if timestamp == lastEntry.ID.Timestamp {
+			if sequenceNumber <= lastEntry.ID.SequenceNumber {
+				return fmt.Errorf(constants.ERR_INVALID_ID_XADD_SMALLER)
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[string]string) (EntryId, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	lastEntry, err := s.lookUpLastEntry(key)
+	if err != nil {
+		return EntryId{}, err
+	}
+
+	ts, seq := resolveEntryId(entryId, lastEntry)
+
+	if err := validateResolvedEntryId(ts, seq, lastEntry); err != nil {
+		return EntryId{}, err
+	}
+
+	updatedEntryId := EntryId{
+		Timestamp:      ts,
+		SequenceNumber: seq,
+	}
 
 	streamVal, exists := s.store[key]
 	if !exists {
 		// stream doesn't exist, we create it
 		newEntry := Entry{
-			ID:   entryId,
+			ID:   updatedEntryId,
 			Data: kvPairs,
 		}
 
 		s.store[key] = NewStream([]Entry{newEntry})
-		return entryId, nil
+		return updatedEntryId, nil
 	}
 
 	if streamVal.Type != TypeStream {
-		return "", fmt.Errorf("WRONGTYPE Operation against a key holding the wrong kind of value")
+		return EntryId{}, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
 	}
 
-	// for this stream, search the entry with the entryId and map over the kvPairs and add to the existing kvPairs for the entry
-	currentEntries := streamVal.Entries
-	foundEntryId := false
-
-	for _, currentEntry := range currentEntries {
-		if currentEntry.ID == entryId {
-			maps.Copy(currentEntry.Data, kvPairs)
-			foundEntryId = true
-			break
-		}
+	// entry does not already exist in the stream, add it to the stream
+	newEntry := Entry{
+		ID:   updatedEntryId,
+		Data: kvPairs,
 	}
 
-	if !foundEntryId {
-		// entry does not already exist in the stream, add it to the stream
-		newEntry := Entry{
-			ID:   entryId,
-			Data: kvPairs,
-		}
-
-		streamVal.Entries = append(streamVal.Entries, newEntry)
-		s.store[key] = streamVal
-		return entryId, nil
-	}
-
-	return entryId, nil
+	streamVal.Entries = append(streamVal.Entries, newEntry)
+	s.store[key] = streamVal
+	return updatedEntryId, nil
 }
