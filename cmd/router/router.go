@@ -25,6 +25,7 @@ func NewRouter() Router {
 			"BLPOP":  handler.HandleBLPop,
 			"TYPE":   handler.HandleType,
 			"XADD":   handler.HandleXAdd,
+			"XRANGE": handler.HandleXRange,
 		},
 	}
 }

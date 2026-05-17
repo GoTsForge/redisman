@@ -311,7 +311,7 @@ func HandleXAdd(s *server.Server, cmd parser.Command) protocol.Response {
 	parsedEntryId := utils.ExtractDetailsFromEntryId(entryId)
 
 	if !parsedEntryId.IsValid {
-		return protocol.NewErrorResponse(constants.ERR_INVALID_ID_XADD)
+		return protocol.NewErrorResponse(constants.ERR_INVALID_STREAM_ID)
 	}
 
 	res, err := s.XAdd(key, parsedEntryId, kvPairs)
@@ -320,4 +320,49 @@ func HandleXAdd(s *server.Server, cmd parser.Command) protocol.Response {
 	}
 
 	return protocol.NewBulkString(res.String())
+}
+
+func HandleXRange(s *server.Server, cmd parser.Command) protocol.Response {
+	// Stream key, lower id, upper id
+	if len(cmd.Args) < 3 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XRANGE)
+	}
+
+	key := cmd.Args[0]
+	start := cmd.Args[1]
+	end := cmd.Args[2]
+
+	startId, err := utils.ParseRangeStart(start)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	endId, err := utils.ParseRangeEnd(end)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	entries, err := s.XRange(key, startId, endId)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	var elements []protocol.Response
+
+	for _, entry := range entries {
+		var kvElements []protocol.Response
+
+		for k, v := range entry.Data {
+			kvElements = append(kvElements, protocol.NewBulkString(k), protocol.NewBulkString(v))
+		}
+
+		entryArr := protocol.NewArray([]protocol.Response{
+			protocol.NewBulkString(entry.ID.String()),
+			protocol.NewArray(kvElements),
+		})
+
+		elements = append(elements, entryArr)
+	}
+
+	return protocol.NewArray(elements)
 }

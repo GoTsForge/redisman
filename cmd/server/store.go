@@ -17,18 +17,8 @@ const (
 	TypeStream
 )
 
-type EntryId struct {
-	Timestamp      int
-	SequenceNumber int
-}
-
-// Format the entryId in format: `ts-seq`
-func (e EntryId) String() string {
-	return fmt.Sprintf("%d-%d", e.Timestamp, e.SequenceNumber)
-}
-
 type Entry struct {
-	ID   EntryId
+	ID   utils.EntryId
 	Data map[string]string
 }
 
@@ -429,22 +419,22 @@ func validateResolvedEntryId(timestamp int, sequenceNumber int, lastEntry *Entry
 	return nil
 }
 
-func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[string]string) (EntryId, error) {
+func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[string]string) (utils.EntryId, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	lastEntry, err := s.lookUpLastEntry(key)
 	if err != nil {
-		return EntryId{}, err
+		return utils.EntryId{}, err
 	}
 
 	ts, seq := resolveEntryId(entryId, lastEntry)
 
 	if err := validateResolvedEntryId(ts, seq, lastEntry); err != nil {
-		return EntryId{}, err
+		return utils.EntryId{}, err
 	}
 
-	updatedEntryId := EntryId{
+	updatedEntryId := utils.EntryId{
 		Timestamp:      ts,
 		SequenceNumber: seq,
 	}
@@ -462,7 +452,7 @@ func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[strin
 	}
 
 	if streamVal.Type != TypeStream {
-		return EntryId{}, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
+		return utils.EntryId{}, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
 	}
 
 	// entry does not already exist in the stream, add it to the stream
@@ -474,4 +464,37 @@ func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[strin
 	streamVal.Entries = append(streamVal.Entries, newEntry)
 	s.store[key] = streamVal
 	return updatedEntryId, nil
+}
+
+func (s *Server) XRange(key string, startId utils.EntryId, endId utils.EntryId) ([]Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Lookup the key in the store
+	storeValue, ok := s.store[key]
+	if !ok {
+		return []Entry{}, fmt.Errorf("DNE")
+	}
+
+	if storeValue.Type != TypeStream {
+		return []Entry{}, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
+	}
+
+	var entries []Entry
+
+	for _, entry := range storeValue.Entries {
+		// current entry is smaller than start
+		if entry.ID.Compare(startId) == -1 {
+			continue
+		}
+
+		// current entry is larger than end
+		if entry.ID.Compare(endId) == 1 {
+			break
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
 }
