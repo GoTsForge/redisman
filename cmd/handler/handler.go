@@ -308,7 +308,7 @@ func HandleXAdd(s *server.Server, cmd parser.Command) protocol.Response {
 	}
 
 	// should parse entryId (string here) and return the timestamp and sequenceNumber
-	parsedEntryId := utils.ExtractDetailsFromEntryId(entryId)
+	parsedEntryId := utils.ExtractDetailsFromEntryId(entryId, utils.ParseXAdd)
 
 	if !parsedEntryId.IsValid {
 		return protocol.NewErrorResponse(constants.ERR_INVALID_STREAM_ID)
@@ -365,4 +365,108 @@ func HandleXRange(s *server.Server, cmd parser.Command) protocol.Response {
 	}
 
 	return protocol.NewArray(elements)
+}
+
+func HandleXRead(s *server.Server, cmd parser.Command) protocol.Response {
+	// Stream key, lower id, upper id
+	if len(cmd.Args) < 3 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XRANGE)
+	}
+
+	firstArg := cmd.Args[0]
+	var keyEntryPairsStartIndex int = 1
+
+	var timeout int = -1
+	var timeoutErr error
+	if strings.ToLower(firstArg) == "block" {
+		secondArg := cmd.Args[1]
+		thirdArg := cmd.Args[2]
+
+		// second arg should be the timeout
+		timeout, timeoutErr = strconv.Atoi(secondArg)
+		if timeoutErr != nil {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+
+		// third arg should be "STREAMS" if blocking
+		if strings.ToLower(thirdArg) != "streams" {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+
+		keyEntryPairsStartIndex = 3
+	} else {
+		// if the first arg is not "BLOCK", it must be "STREAMS"
+		if strings.ToLower(firstArg) != "streams" {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+	}
+
+	keyEntryPairSlice := cmd.Args[keyEntryPairsStartIndex:]
+	if len(keyEntryPairSlice)%2 != 0 {
+		return protocol.NewErrorResponse("invalid stuff...")
+	}
+
+	keys := keyEntryPairSlice[:len(keyEntryPairSlice)/2]
+	entryIds := keyEntryPairSlice[len(keyEntryPairSlice)/2:]
+
+	var xReadInputSlice []server.XReadInput
+
+	for idx, id := range entryIds {
+		parsedEntryId := utils.ExtractDetailsFromEntryId(id, utils.ParseXRead)
+		if !parsedEntryId.IsValid {
+			return protocol.NewErrorResponse("ERR invalid id")
+		}
+
+		xReadInputSlice = append(xReadInputSlice, server.XReadInput{
+			Key: keys[idx],
+			EntryId: utils.EntryId{
+				Timestamp:      parsedEntryId.Timestamp,
+				SequenceNumber: parsedEntryId.SequenceNumber,
+			},
+			IsLastEntryId: parsedEntryId.IsLastEntryId,
+		})
+	}
+
+	streams, err := s.XRead(xReadInputSlice, timeout)
+
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	areAllStreamsEmpty := true
+	for _, stream := range streams {
+		if len(stream.Entries) > 0 {
+			areAllStreamsEmpty = false
+			break
+		}
+	}
+
+	if areAllStreamsEmpty {
+		// return nil
+		return protocol.NullBulkString{}
+	}
+
+	var streamElements []protocol.Response
+	for _, stream := range streams {
+		var entryElements []protocol.Response
+		for _, entry := range stream.Entries {
+			var entryDataElements []protocol.Response
+			for k, v := range entry.Data {
+				entryDataElements = append(entryDataElements, protocol.NewBulkString(k), protocol.NewBulkString(v))
+			}
+
+			entryElements = append(entryElements, protocol.NewArray([]protocol.Response{
+				protocol.NewBulkString(entry.ID.String()),
+				protocol.NewArray(entryDataElements),
+			}))
+		}
+
+		streamElements = append(streamElements, protocol.NewArray([]protocol.Response{
+			protocol.NewBulkString(stream.Key),
+			protocol.NewArray(entryElements),
+		}))
+
+	}
+
+	return protocol.NewArray(streamElements)
 }

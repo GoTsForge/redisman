@@ -30,6 +30,11 @@ type Value struct {
 	Expiry      time.Time
 }
 
+type Stream struct {
+	Key     string
+	Entries []Entry
+}
+
 func NewStringValue(val string, expiry time.Time) Value {
 	return Value{Type: TypeString, StringValue: val, Expiry: expiry}
 }
@@ -45,23 +50,30 @@ func NewStream(entries []Entry) Value {
 	}
 }
 
+type WaiterMap map[string][]chan struct{}
+
 type Server struct {
 	mu    *sync.RWMutex
 	store map[string]Value
-	// waiters is a map of key -> channels used for blocking operations
+	// blPopWaiters is a map of key -> channels used for blocking operations
 	// multiple BLPOP meaning multiple goroutines can wait on the same key - hence we need a slice of channels
-	waiters map[string][]chan struct{}
+	blPopWaiters WaiterMap
+	// blXReadWaiters is a map of key -> channels used for blocking operations
+	// multiple XREAD BLOCK meaning multiple goroutines can wait on the same key - hence we need a slice of channels
+	blXReadWaiters WaiterMap
 }
 
 func NewServer() *Server {
 	var mu sync.RWMutex
 	store := make(map[string]Value)
-	waiters := make(map[string][]chan struct{})
+	listWaiters := make(map[string][]chan struct{})
+	streamWaiters := make(map[string][]chan struct{})
 
 	return &Server{
-		mu:      &mu,
-		store:   store,
-		waiters: waiters,
+		mu:             &mu,
+		store:          store,
+		blPopWaiters:   listWaiters,
+		blXReadWaiters: streamWaiters,
 	}
 }
 
@@ -74,8 +86,8 @@ func (s *Server) Set(key string, value string, expiry time.Time) {
 }
 
 func (s *Server) signalFirstWaiter(key string) {
-	firstWaiterForKey := s.waiters[key][0]
-	s.waiters[key] = s.waiters[key][1:]
+	firstWaiterForKey := s.blPopWaiters[key][0]
+	s.blPopWaiters[key] = s.blPopWaiters[key][1:]
 
 	// signal the channel that a value is pushed
 	firstWaiterForKey <- struct{}{}
@@ -88,7 +100,7 @@ func (s *Server) LPush(key string, vals []string) (int, error) {
 	if !ok {
 		// we need to create a new list
 		s.store[key] = NewListEntry(vals)
-		if len(s.waiters[key]) > 0 {
+		if len(s.blPopWaiters[key]) > 0 {
 			s.signalFirstWaiter(key)
 		}
 
@@ -102,7 +114,7 @@ func (s *Server) LPush(key string, vals []string) (int, error) {
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
 	}
 
-	if len(s.waiters[key]) > 0 {
+	if len(s.blPopWaiters[key]) > 0 {
 		s.signalFirstWaiter(key)
 	}
 
@@ -170,7 +182,7 @@ func (s *Server) RPush(key string, vals []string) (int, error) {
 	if !ok {
 		// we need to create a new list
 		s.store[key] = NewListEntry(vals)
-		if len(s.waiters[key]) > 0 {
+		if len(s.blPopWaiters[key]) > 0 {
 			s.signalFirstWaiter(key)
 		}
 
@@ -184,7 +196,7 @@ func (s *Server) RPush(key string, vals []string) (int, error) {
 		return 0, fmt.Errorf("WRONGTYPE key is not a list")
 	}
 
-	if len(s.waiters[key]) > 0 {
+	if len(s.blPopWaiters[key]) > 0 {
 		s.signalFirstWaiter(key)
 	}
 
@@ -275,14 +287,14 @@ func (s *Server) ListPop(key string, numValuesToRemove int) ([]string, bool, err
 	return poppedValues, true, nil
 }
 
-func (s *Server) cleanup(keys []string, notifyChan chan struct{}) {
+func (s *Server) cleanupWaiters(keys []string, notifyChan chan struct{}, waiters WaiterMap) {
 	for _, key := range keys {
-		for idx, waiter := range s.waiters[key] {
+		for idx, waiter := range waiters[key] {
 			if waiter == notifyChan {
-				s.waiters[key] = append(s.waiters[key][:idx], s.waiters[key][idx+1:]...)
+				waiters[key] = append(waiters[key][:idx], waiters[key][idx+1:]...)
 
-				if len(s.waiters[key]) == 0 {
-					delete(s.waiters, key)
+				if len(waiters[key]) == 0 {
+					delete(waiters, key)
 				}
 
 				break
@@ -302,7 +314,7 @@ func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool,
 
 	for {
 		s.mu.Lock()
-		s.cleanup(keys, notifyChan)
+		s.cleanupWaiters(keys, notifyChan, s.blPopWaiters)
 
 		for _, key := range keys {
 			val := s.store[key]
@@ -318,7 +330,7 @@ func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool,
 
 		for _, key := range keys {
 			// register the waiters for this key
-			s.waiters[key] = append(s.waiters[key], notifyChan)
+			s.blPopWaiters[key] = append(s.blPopWaiters[key], notifyChan)
 		}
 
 		s.mu.Unlock()
@@ -330,7 +342,7 @@ func (s *Server) BListPop(keys []string, timeout time.Duration) ([]string, bool,
 		case <-deadline:
 			s.mu.Lock()
 			// clean up notifyChan from ALL waiters for ALL keys
-			s.cleanup(keys, notifyChan)
+			s.cleanupWaiters(keys, notifyChan, s.blPopWaiters)
 			s.mu.Unlock()
 		}
 
@@ -448,6 +460,7 @@ func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[strin
 		}
 
 		s.store[key] = NewStream([]Entry{newEntry})
+		s.SignalAllStreamWaiters(key)
 		return updatedEntryId, nil
 	}
 
@@ -463,6 +476,7 @@ func (s *Server) XAdd(key string, entryId utils.ParsedEntryId, kvPairs map[strin
 
 	streamVal.Entries = append(streamVal.Entries, newEntry)
 	s.store[key] = streamVal
+	s.SignalAllStreamWaiters(key)
 	return updatedEntryId, nil
 }
 
@@ -471,10 +485,7 @@ func (s *Server) XRange(key string, startId utils.EntryId, endId utils.EntryId) 
 	defer s.mu.Unlock()
 
 	// Lookup the key in the store
-	storeValue, ok := s.store[key]
-	if !ok {
-		return []Entry{}, fmt.Errorf("DNE")
-	}
+	storeValue := s.store[key]
 
 	if storeValue.Type != TypeStream {
 		return []Entry{}, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
@@ -497,4 +508,133 @@ func (s *Server) XRange(key string, startId utils.EntryId, endId utils.EntryId) 
 	}
 
 	return entries, nil
+}
+
+type XReadInput struct {
+	Key           string
+	EntryId       utils.EntryId
+	IsLastEntryId bool
+}
+
+func (s *Server) SignalAllStreamWaiters(key string) {
+	waiters := s.blXReadWaiters[key]
+
+	// signal the channels that a value is pushed
+	for _, waiter := range waiters {
+		// Non blocking channel OP
+		select {
+		case waiter <- struct{}{}:
+		default:
+		}
+	}
+
+	// delete all the waiters for this key
+	delete(s.blXReadWaiters, key)
+}
+
+func (s *Server) XRead(input []XReadInput, timeoutInt int) ([]Stream, error) {
+	var deadline <-chan time.Time
+	var isBlocking = timeoutInt >= 0
+
+	if timeoutInt > 0 {
+		deadline = time.After(time.Duration(timeoutInt) * time.Millisecond)
+	}
+
+	notifyChan := make(chan struct{}, 1)
+
+	keys := []string{}
+	for _, inputEntry := range input {
+		keys = append(keys, inputEntry.Key)
+	}
+
+	// resolve all the entry ids and check which ones are passing "$" to signal the last entry id as the input
+	updatedInput := []XReadInput{}
+	for _, inputEntry := range input {
+		s.mu.Lock()
+		key := inputEntry.Key
+		storeValue, exists := s.store[key]
+
+		if exists && storeValue.Type != TypeStream {
+			s.mu.Unlock()
+			return []Stream{}, fmt.Errorf(constants.ERR_WRONGTYPE_OPERATION)
+		}
+
+		resolved := inputEntry // default - no "$"
+
+		if inputEntry.IsLastEntryId { // "$" case
+			if len(storeValue.Entries) == 0 {
+				resolved.EntryId = utils.EntryId{}
+			} else {
+				resolved.EntryId = storeValue.Entries[len(storeValue.Entries)-1].ID
+			}
+		}
+
+		updatedInput = append(updatedInput, resolved)
+		s.mu.Unlock()
+	}
+
+	for {
+		s.mu.Lock()
+		s.cleanupWaiters(keys, notifyChan, s.blXReadWaiters)
+
+		var streams []Stream = []Stream{}
+		// core comparison loop
+		for _, inputEntry := range updatedInput {
+			key := inputEntry.Key
+			entryId := inputEntry.EntryId
+
+			storeValue := s.store[key]
+
+			// Store value type check that it should be a stream here has already been done before the main loop, so we don't do it again
+			stream := Stream{
+				Key: key,
+			}
+
+			for _, entry := range storeValue.Entries {
+				if entry.ID.Compare(entryId) == 1 {
+					// current entry is greater than the entryId passed, this should go in to the stream
+					stream.Entries = append(stream.Entries, entry)
+				} else {
+					continue
+				}
+			}
+
+			streams = append(streams, stream)
+		}
+
+		// we wanna check if we should block or not - if the stream has ANY entries AND isBlocking is true, then we block
+		var streamHasEntries bool = false
+		for _, stream := range streams {
+			if len(stream.Entries) > 0 {
+				streamHasEntries = true
+				break
+			}
+		}
+
+		if streamHasEntries || !isBlocking {
+			s.mu.Unlock()
+			return streams, nil
+		}
+
+		// stream has no entries AND we are blocking
+		for _, inputEntry := range input {
+			key := inputEntry.Key
+			// register a waiter
+			s.blXReadWaiters[key] = append(s.blXReadWaiters[key], notifyChan)
+		}
+
+		s.mu.Unlock()
+
+		select {
+		case <-notifyChan:
+			// a signal for any key
+			continue
+		case <-deadline:
+			s.mu.Lock()
+			s.cleanupWaiters(keys, notifyChan, s.blXReadWaiters)
+			s.mu.Unlock()
+		}
+
+		return streams, nil
+	}
 }

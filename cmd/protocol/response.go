@@ -77,17 +77,17 @@ func NewInteger(i int) Response {
 }
 
 type Array struct {
-	elements []Response
+	Elements []Response
 }
 
 func (a Array) Encode() []byte {
-	arrLen := len(a.elements)
+	arrLen := len(a.Elements)
 	bulkString := fmt.Sprintf("*%d\r\n", arrLen)
 
 	var sb strings.Builder
 	sb.WriteString(bulkString)
 
-	for _, element := range a.elements {
+	for _, element := range a.Elements {
 		sb.Write(element.Encode())
 	}
 
@@ -96,6 +96,6 @@ func (a Array) Encode() []byte {
 
 func NewArray(elements []Response) Response {
 	return Array{
-		elements: elements,
+		Elements: elements,
 	}
 }

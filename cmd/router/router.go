@@ -26,6 +26,7 @@ func NewRouter() Router {
 			"TYPE":   handler.HandleType,
 			"XADD":   handler.HandleXAdd,
 			"XRANGE": handler.HandleXRange,
+			"XREAD":  handler.HandleXRead,
 		},
 	}
 }

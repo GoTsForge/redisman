@@ -45,11 +45,36 @@ type ParsedEntryId struct {
 	IsTimestampAutoGen      bool
 	IsSequenceNumberAutoGen bool
 	IsValid                 bool
+	IsLastEntryId           bool
 }
 
+type ParseContext int
+
+const (
+	ParseXAdd ParseContext = iota
+	ParseXRead
+	ParseXRange
+)
+
 // Returns timestamp, sequenceNumber, isTimeStampAutoGen, isSequenceNumberAutoGen, isValid
-func ExtractDetailsFromEntryId(entryId string) ParsedEntryId {
+func ExtractDetailsFromEntryId(entryId string, parseContext ParseContext) ParsedEntryId {
+	if entryId == "$" {
+		if parseContext != ParseXRead {
+			return ParsedEntryId{IsValid: false}
+		}
+
+		return ParsedEntryId{
+			IsValid:       true,
+			IsLastEntryId: true,
+		}
+	}
+
+	// full auto
 	if entryId == "*" {
+		if parseContext != ParseXAdd {
+			return ParsedEntryId{IsValid: false}
+		}
+
 		return ParsedEntryId{
 			Timestamp:               0,
 			SequenceNumber:          0,
@@ -90,7 +115,12 @@ func ExtractDetailsFromEntryId(entryId string) ParsedEntryId {
 		}
 	}
 
+	// ts-* : auto generate the sequence number
 	if sequenceNumber == "*" {
+		if parseContext != ParseXAdd {
+			return ParsedEntryId{IsValid: false}
+		}
+
 		return ParsedEntryId{
 			Timestamp:               timestampInt,
 			SequenceNumber:          0,
