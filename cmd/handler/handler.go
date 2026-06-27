@@ -10,6 +10,7 @@ import (
 	"github.com/gotsforge/redisman/cmd/parser"
 	"github.com/gotsforge/redisman/cmd/protocol"
 	"github.com/gotsforge/redisman/cmd/server"
+	"github.com/gotsforge/redisman/cmd/utils"
 )
 
 type Handler func(*server.Server, parser.Command) protocol.Response
@@ -126,7 +127,12 @@ func HandleLRange(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewErrorResponse(err.Error())
 	}
 
-	return protocol.NewBulkArray(arr)
+	var elements []protocol.Response
+	for _, elem := range arr {
+		elements = append(elements, protocol.NewBulkString(elem))
+	}
+
+	return protocol.NewArray(elements)
 }
 
 func HandleLLen(s *server.Server, cmd parser.Command) protocol.Response {
@@ -160,7 +166,7 @@ func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		}
 	}
 
-	poppedVal, found, err := s.ListPop(key, numberOfArgsToRemoveInt)
+	poppedVals, found, err := s.ListPop(key, numberOfArgsToRemoveInt)
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
 	}
@@ -169,11 +175,12 @@ func HandleLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewNullBulkString()
 	}
 
-	if len(poppedVal) == 1 {
-		return protocol.NewBulkString(poppedVal[0])
+	var elements []protocol.Response
+	for _, poppedVal := range poppedVals {
+		elements = append(elements, protocol.NewBulkString(poppedVal))
 	}
 
-	return protocol.NewBulkArray(poppedVal)
+	return protocol.NewArray(elements)
 }
 
 func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
@@ -196,7 +203,7 @@ func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		}
 	}
 
-	poppedVal, found, err := s.BListPop(keys, time.Duration(timeoutInt)*time.Second)
+	poppedVals, found, err := s.BListPop(keys, time.Duration(timeoutInt)*time.Second)
 	if err != nil {
 		return protocol.NewErrorResponse(err.Error())
 	}
@@ -205,11 +212,12 @@ func HandleBLPop(s *server.Server, cmd parser.Command) protocol.Response {
 		return protocol.NewNullBulkString()
 	}
 
-	if len(poppedVal) == 1 {
-		return protocol.NewBulkString(poppedVal[0])
+	var elements []protocol.Response
+	for _, poppedVal := range poppedVals {
+		elements = append(elements, protocol.NewBulkString(poppedVal))
 	}
 
-	return protocol.NewBulkArray(poppedVal)
+	return protocol.NewArray(elements)
 }
 
 func HandleRPush(s *server.Server, cmd parser.Command) protocol.Response {
@@ -246,4 +254,219 @@ func HandleGet(s *server.Server, cmd parser.Command) protocol.Response {
 	}
 
 	return protocol.NewBulkString(value.StringValue)
+}
+
+func HandleType(s *server.Server, cmd parser.Command) protocol.Response {
+	if len(cmd.Args) != 1 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_TYPE)
+	}
+
+	key := cmd.Args[0]
+
+	_, exists := s.Get(key)
+	if !exists {
+		res, err := protocol.NewSimpleString("none")
+		if err != nil {
+			return protocol.NewErrorResponse(err.Error())
+
+		}
+
+		return res
+	}
+
+	res, err := protocol.NewSimpleString("string")
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+
+	}
+
+	return res
+}
+
+func HandleXAdd(s *server.Server, cmd parser.Command) protocol.Response {
+	// Stream key, entry id, atleast one K-V pair
+	if len(cmd.Args) < 4 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XADD)
+	}
+
+	argsLen := len(cmd.Args)
+
+	if argsLen%2 != 0 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XADD)
+	}
+
+	key := cmd.Args[0]
+	entryId := cmd.Args[1]
+
+	restArgs := cmd.Args[2:] // [k,v,k1,v1...] -> {k:v,k1:v1...}
+	var kvPairs map[string]string = make(map[string]string)
+
+	for idx := 0; idx < len(restArgs); idx += 2 {
+		currVal := restArgs[idx]
+		nextVal := restArgs[idx+1]
+		kvPairs[currVal] = nextVal
+	}
+
+	// should parse entryId (string here) and return the timestamp and sequenceNumber
+	parsedEntryId := utils.ExtractDetailsFromEntryId(entryId, utils.ParseXAdd)
+
+	if !parsedEntryId.IsValid {
+		return protocol.NewErrorResponse(constants.ERR_INVALID_STREAM_ID)
+	}
+
+	res, err := s.XAdd(key, parsedEntryId, kvPairs)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	return protocol.NewBulkString(res.String())
+}
+
+func HandleXRange(s *server.Server, cmd parser.Command) protocol.Response {
+	// Stream key, lower id, upper id
+	if len(cmd.Args) < 3 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XRANGE)
+	}
+
+	key := cmd.Args[0]
+	start := cmd.Args[1]
+	end := cmd.Args[2]
+
+	startId, err := utils.ParseRangeStart(start)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	endId, err := utils.ParseRangeEnd(end)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	entries, err := s.XRange(key, startId, endId)
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	var elements []protocol.Response
+
+	for _, entry := range entries {
+		var kvElements []protocol.Response
+
+		for k, v := range entry.Data {
+			kvElements = append(kvElements, protocol.NewBulkString(k), protocol.NewBulkString(v))
+		}
+
+		entryArr := protocol.NewArray([]protocol.Response{
+			protocol.NewBulkString(entry.ID.String()),
+			protocol.NewArray(kvElements),
+		})
+
+		elements = append(elements, entryArr)
+	}
+
+	return protocol.NewArray(elements)
+}
+
+func HandleXRead(s *server.Server, cmd parser.Command) protocol.Response {
+	// Stream key, lower id, upper id
+	if len(cmd.Args) < 3 {
+		return protocol.NewErrorResponse(constants.ERR_WRONG_NUMBER_OF_ARGS_XRANGE)
+	}
+
+	firstArg := cmd.Args[0]
+	var keyEntryPairsStartIndex int = 1
+
+	var timeout int = -1
+	var timeoutErr error
+	if strings.ToLower(firstArg) == "block" {
+		secondArg := cmd.Args[1]
+		thirdArg := cmd.Args[2]
+
+		// second arg should be the timeout
+		timeout, timeoutErr = strconv.Atoi(secondArg)
+		if timeoutErr != nil {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+
+		// third arg should be "STREAMS" if blocking
+		if strings.ToLower(thirdArg) != "streams" {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+
+		keyEntryPairsStartIndex = 3
+	} else {
+		// if the first arg is not "BLOCK", it must be "STREAMS"
+		if strings.ToLower(firstArg) != "streams" {
+			return protocol.NewErrorResponse(constants.ERR_SYNTAX_ERROR)
+		}
+	}
+
+	keyEntryPairSlice := cmd.Args[keyEntryPairsStartIndex:]
+	if len(keyEntryPairSlice)%2 != 0 {
+		return protocol.NewErrorResponse("invalid stuff...")
+	}
+
+	keys := keyEntryPairSlice[:len(keyEntryPairSlice)/2]
+	entryIds := keyEntryPairSlice[len(keyEntryPairSlice)/2:]
+
+	var xReadInputSlice []server.XReadInput
+
+	for idx, id := range entryIds {
+		parsedEntryId := utils.ExtractDetailsFromEntryId(id, utils.ParseXRead)
+		if !parsedEntryId.IsValid {
+			return protocol.NewErrorResponse("ERR invalid id")
+		}
+
+		xReadInputSlice = append(xReadInputSlice, server.XReadInput{
+			Key: keys[idx],
+			EntryId: utils.EntryId{
+				Timestamp:      parsedEntryId.Timestamp,
+				SequenceNumber: parsedEntryId.SequenceNumber,
+			},
+			IsLastEntryId: parsedEntryId.IsLastEntryId,
+		})
+	}
+
+	streams, err := s.XRead(xReadInputSlice, timeout)
+
+	if err != nil {
+		return protocol.NewErrorResponse(err.Error())
+	}
+
+	areAllStreamsEmpty := true
+	for _, stream := range streams {
+		if len(stream.Entries) > 0 {
+			areAllStreamsEmpty = false
+			break
+		}
+	}
+
+	if areAllStreamsEmpty {
+		// return nil
+		return protocol.NullBulkString{}
+	}
+
+	var streamElements []protocol.Response
+	for _, stream := range streams {
+		var entryElements []protocol.Response
+		for _, entry := range stream.Entries {
+			var entryDataElements []protocol.Response
+			for k, v := range entry.Data {
+				entryDataElements = append(entryDataElements, protocol.NewBulkString(k), protocol.NewBulkString(v))
+			}
+
+			entryElements = append(entryElements, protocol.NewArray([]protocol.Response{
+				protocol.NewBulkString(entry.ID.String()),
+				protocol.NewArray(entryDataElements),
+			}))
+		}
+
+		streamElements = append(streamElements, protocol.NewArray([]protocol.Response{
+			protocol.NewBulkString(stream.Key),
+			protocol.NewArray(entryElements),
+		}))
+
+	}
+
+	return protocol.NewArray(streamElements)
 }

@@ -76,24 +76,26 @@ func NewInteger(i int) Response {
 	}
 }
 
-type BulkArray struct {
-	values []string
+type Array struct {
+	Elements []Response
 }
 
-func (a BulkArray) Encode() []byte {
-	arrLen := len(a.values)
-
+func (a Array) Encode() []byte {
+	arrLen := len(a.Elements)
 	bulkString := fmt.Sprintf("*%d\r\n", arrLen)
-	for _, val := range a.values {
-		formattedVal := fmt.Sprintf("$%d\r\n%s\r\n", len(val), val)
-		bulkString += formattedVal
+
+	var sb strings.Builder
+	sb.WriteString(bulkString)
+
+	for _, element := range a.Elements {
+		sb.Write(element.Encode())
 	}
 
-	return []byte(bulkString)
+	return []byte(sb.String())
 }
 
-func NewBulkArray(values []string) Response {
-	return BulkArray{
-		values: values,
+func NewArray(elements []Response) Response {
+	return Array{
+		Elements: elements,
 	}
 }
